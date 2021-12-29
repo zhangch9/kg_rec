@@ -1,0 +1,11 @@
+# This file may be used to create an environment using:
+# $ conda create --name <env> --file <this file>
+# platform: linux-64
+pytorch=1.10.1=py3.9_cuda11.1_cudnn8.0.5_0
+cudatoolkit=11.1.1=h6406543_9
+pytorch-lightning=1.5.7=pyhd8ed1ab_0
+dgl-cuda11.1=0.7.2=py39_0
+docstring_parser=0.13=pyhd8ed1ab_0
+jsonargparse=4.1.0=pyhd8ed1ab_0
+mlflow=1.2.0=py_1
+scikit-learn=1.0.2=py39h4dfa638_0

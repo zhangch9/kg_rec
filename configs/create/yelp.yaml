@@ -1,0 +1,4 @@
+args:
+  raw_dir: data/raw/yelp_dataset
+  save_dir: data/processed/yelp
+verbose: 1
