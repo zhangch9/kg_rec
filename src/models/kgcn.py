@@ -56,7 +56,7 @@ class KGCN(BaseModel):
         self.dropout_attn = nn.Dropout(dropout_attn)
         self.activation = get_activation(activation)
         self.register_buffer(
-            "inf", torch.Tensor([torch.finfo(torch.float32).max])
+            "inf", torch.Tensor([torch.finfo(torch.float).max])
         )
         self.reset_parameters()
 

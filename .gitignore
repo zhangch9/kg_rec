@@ -88,4 +88,5 @@ target/
 # Mypy cache
 .mypy_cache/
 
-notebooks/raw
+notebooks/raw_data
+mlruns/

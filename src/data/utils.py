@@ -14,13 +14,22 @@ from .datasets import BaseDataset
 
 
 def read_data_lastfm(
-    data_dir: Union[str, Path]
-) -> Tuple[np.ndarray, np.ndarray]:
+    data_dir: Union[str, Path], use_edges_user: bool = False
+) -> Tuple[np.ndarray, ...]:
     data_dir = Path(data_dir).expanduser().resolve()
-    ratings = np.loadtxt(data_dir.joinpath("ratings.txt"), dtype=np.int32)
-    triplets_kg = np.loadtxt(
-        data_dir.joinpath("triplets_kg.txt"), dtype=np.int32
+    ratings = np.unique(
+        np.loadtxt(data_dir.joinpath("ratings.txt"), dtype=np.int64), axis=0
     )
+    triplets_kg = np.unique(
+        np.loadtxt(data_dir.joinpath("triplets_kg.txt"), dtype=np.int64), axis=0
+    )
+
+    if use_edges_user:
+        edges_user = np.unique(
+            np.loadtxt(data_dir.joinpath("edges_uu.txt"), dtype=np.int64),
+            axis=0,
+        )
+        return ratings, triplets_kg, edges_user
     return ratings, triplets_kg
 
 

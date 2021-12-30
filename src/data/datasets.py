@@ -115,6 +115,19 @@ class RippleDataset(BaseDataset):
         return self._size
 
 
+class CTRPredictionDataset(BaseDataset):
+    def __init__(self, ratings: torch.Tensor):
+        self._ratings = ratings
+        self._size = ratings.size(0)
+
+    def __len__(self):
+        return self._size
+
+    def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
+        uid, iid, label = self._ratings[index]
+        return {"uids": uid, "iids": iid, "labels": label}
+
+
 class BPRDataset(BaseDataset):
     def __init__(
         self,
@@ -138,7 +151,7 @@ class BPRDataset(BaseDataset):
         if self._graph_rating_test is None:
             # training stage
             idx_pos = torch.multinomial(
-                torch.ones_like(iids_pos, dtype=torch.float32),
+                torch.ones_like(iids_pos, dtype=torch.float),
                 num_samples=1,
                 replacement=False,
             )

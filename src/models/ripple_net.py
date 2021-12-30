@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Implements the KGCN model."""
+"""Implements the RippleNet model."""
 
 
 import math
@@ -65,8 +65,8 @@ class RippleNet(BaseModel):
                 into CUDA pinned memory before returning them.
         """
         super().__init__(optim_args)
-        # Arguments for dataloader
         self.save_hyperparameters()
+        # Arguments for dataloader
         self._batch_size_train = batch_size_train
         self._batch_size_val = batch_size_val or self._batch_size_train
         self._batch_size_test = batch_size_test or self._batch_size_val
@@ -75,7 +75,7 @@ class RippleNet(BaseModel):
 
         self._weight_loss_kg = weight_loss_kg
 
-        self._users = 0
+        self._num_users = 0
         self._num_entities = 0
         self._num_relations = 0
         self._dataset_train = None
@@ -272,7 +272,7 @@ class RippleNet(BaseModel):
 
     def training_step(
         self, batch: Dict[str, torch.Tensor], batch_idx: int
-    ) -> Dict[str, torch.Tensor]:
+    ) -> Dict[str, Union[torch.Tensor, int]]:
         embs_head, embs_relation, embs_tail = self._split_ripple_sets(
             batch["ripple_sets"]
         )
@@ -311,7 +311,9 @@ class RippleNet(BaseModel):
             "weight_kg": weight_kg,
         }
 
-    def training_epoch_end(self, outputs: Sequence[Dict[str, torch.Tensor]]):
+    def training_epoch_end(
+        self, outputs: Sequence[Dict[str, Union[torch.Tensor, int]]]
+    ):
         loss = 0.0
         loss_cls = 0.0
         weight_cls = 0.0
@@ -349,7 +351,7 @@ class RippleNet(BaseModel):
     ) -> Dict[str, Union[int, float]]:
         metrics = {}
         for k, v in self.evaluate(outputs).items():
-            self.log(f"{k}_val", v)
+            self.log(f"{k}_val", float(v))
         return metrics
 
     def test_step(
@@ -362,7 +364,7 @@ class RippleNet(BaseModel):
     ) -> Dict[str, Union[int, float]]:
         metrics = {}
         for k, v in self.evaluate(outputs).items():
-            self.log(f"{k}_test", v)
+            self.log(f"{k}_test", float(v))
         return metrics
 
     def evaluate(
