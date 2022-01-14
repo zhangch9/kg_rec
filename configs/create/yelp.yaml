@@ -1,4 +1,6 @@
 args:
   raw_dir: data/raw/yelp_dataset
   save_dir: data/processed/yelp
+  k: 10
+  seed: 0
 verbose: 1

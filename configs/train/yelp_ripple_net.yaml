@@ -2,12 +2,12 @@ model:
   class_path: src.models.RippleNet
   init_args:
     dataset: lastfm
-    data_dir: data/processed/lastfm/seed_0
+    data_dir: data/processed/yelp/core_10_seed_0
     max_hop: 3
     num_neighbors: 32
     embed_dim: 16
-    batch_size_train: 128
-    num_workers: 8
+    batch_size_train: 4096
+    num_workers: 16
     weight_kg: 0.02
 optim:
   optimizer:

@@ -48,11 +48,11 @@ class SimpleHGN(BaseModel):
         dropout: ClosedUnitInterval = 0.0,
         dropout_attn: ClosedUnitInterval = 0.0,
         residual: bool = True,
-        use_edges_user: bool = False,
         val_ratio: OpenUnitInterval = 0.2,
         test_ratio: OpenUnitInterval = 0.2,
         reverse_triplet: bool = True,
         reverse_relation: bool = True,
+        use_edges_user: bool = False,
         batch_size_train: PositiveInt = 32,
         batch_size_val: Optional[PositiveInt] = None,
         batch_size_test: Optional[PositiveInt] = None,
@@ -89,7 +89,6 @@ class SimpleHGN(BaseModel):
             dropout: Dropout rate of the model.
             dropout_attn: Dropout rate of the attention model.
             residual: Whether to enable the residual structure.
-            use_edges_user: Whether to use social network between users.
             val_ratio: A value between 0.0 and 1.0 representing the proportion
                 of the dataset to include in the validation split.
             test_ratio: A value between 0.0 and 1.0 representing the proportion
@@ -101,6 +100,7 @@ class SimpleHGN(BaseModel):
                 `(head_id, tail_id)`. If set to `True`, the relation type of
                 `(tail_id, head_id)` will be the different from the relation
                 type of `(head_id, tail_id)`.
+            use_edges_user: Whether to use social network between users.
             batch_size_train: Batch size in the training stage.
             batch_size_val: Batch size in the validation stage.
                 If not specified, `batch_size_train` will be used.
@@ -132,11 +132,11 @@ class SimpleHGN(BaseModel):
         self._build_dataset(
             dataset,
             data_dir,
-            use_edges_user,
             val_ratio,
             test_ratio,
             reverse_triplet,
             reverse_relation,
+            use_edges_user,
         )
 
         # Model architecture
@@ -182,19 +182,16 @@ class SimpleHGN(BaseModel):
         self.register_buffer(
             "eps", torch.Tensor([torch.finfo(torch.float).tiny])
         )
-        self.register_buffer(
-            "inf", torch.Tensor([torch.finfo(torch.float).max])
-        )
         self.reset_parameters()
 
     def _build_graph(
         self,
         ratings: np.ndarray,
         triplets_kg: np.ndarray,
-        edges_user: np.ndarray,
-        reverse_edge_user: bool,
         reverse_triplet: bool,
         reverse_relation: bool,
+        edges_user: Optional[np.ndarray] = None,
+        reverse_edge_user: bool = False,
     ) -> dgl.DGLGraph:
         reverse_relation = reverse_triplet and reverse_relation
         num_feats = 0
@@ -211,13 +208,14 @@ class SimpleHGN(BaseModel):
             edge_feat_ids[(eid, eid)].add(num_feats)
         num_feats += 1
 
-        # Edges between users
-        feat_id_rev = num_feats + 1
-        for uid, vid in edges_user:
-            edge_feat_ids[(uid, vid)].add(num_feats)
-            if reverse_edge_user:
-                edge_feat_ids[(vid, uid)].add(feat_id_rev)
-        num_feats += 2 if reverse_edge_user else 1
+        if edges_user is not None:
+            # Edges between users
+            feat_id_rev = num_feats + 1
+            for uid, vid in edges_user:
+                edge_feat_ids[(uid, vid)].add(num_feats)
+                if reverse_edge_user:
+                    edge_feat_ids[(vid, uid)].add(feat_id_rev)
+            num_feats += 2 if reverse_edge_user else 1
 
         # Ratings between users and entities.
         feat_id_rev = num_feats + 1 if reverse_relation else num_feats
@@ -256,11 +254,11 @@ class SimpleHGN(BaseModel):
         self,
         dataset: str,
         data_dir: str,
-        use_edges_user: bool,
         val_ratio: float,
         test_ratio: float,
         reverse_triplet: bool,
         reverse_relation: bool,
+        use_edges_user: bool = False,
     ):
         dataset = dataset.lower()
         edges_user = None
@@ -306,10 +304,10 @@ class SimpleHGN(BaseModel):
         self._graph = self._build_graph(
             ratings_train,
             triplets_kg,
-            edges_user,
-            reverse_edge_user,
             reverse_triplet,
             reverse_relation,
+            edges_user,
+            reverse_edge_user,
         )
         self._dataset_train = CTRPredictionDataset(
             torch.as_tensor(ratings_train, dtype=torch.long)
@@ -322,8 +320,8 @@ class SimpleHGN(BaseModel):
         )
 
     def reset_parameters(self):
-        fan_out = self.embeddings_node.size(1)
-        nn.init.normal_(self.embeddings_node, std=1 / math.sqrt(fan_out))
+        a = math.sqrt(3 / self.embeddings_node.size(1))
+        nn.init.uniform_(self.embeddings_node, -a, a)
 
     def train_dataloader(self) -> DataLoader:
         return create_dataloader(
@@ -339,8 +337,8 @@ class SimpleHGN(BaseModel):
         return create_dataloader(
             self._dataset_val,
             self._batch_size_val,
-            shuffle=True,
-            drop_last=True,
+            shuffle=False,
+            drop_last=False,
             num_workers=self._num_workers,
             pin_memory=self._pin_memory,
         )
@@ -349,8 +347,8 @@ class SimpleHGN(BaseModel):
         return create_dataloader(
             self._dataset_test,
             self._batch_size_test,
-            shuffle=True,
-            drop_last=True,
+            shuffle=False,
+            drop_last=False,
             num_workers=self._num_workers,
             pin_memory=self._pin_memory,
         )
@@ -385,10 +383,11 @@ class SimpleHGN(BaseModel):
         loss = 0.0
         weight = 0.0
         for out in outputs:
-            loss += out["loss"].item()
+            loss += out["loss"].item() * out["weight"]
             weight += out["weight"]
         weight = float(weight)
         self.log("loss", loss / weight)
+        self.log("weight", weight)
 
     def validation_step(
         self, batch: Dict[str, torch.Tensor], batch_idx: int
@@ -403,8 +402,8 @@ class SimpleHGN(BaseModel):
     def validation_epoch_end(
         self, outputs: Sequence[Dict[str, torch.Tensor]]
     ) -> Dict[str, Union[int, float]]:
-        metrics = {}
-        for k, v in self.evaluate(outputs).items():
+        metrics = self.evaluate(outputs)
+        for k, v in metrics.items():
             self.log(f"{k}_val", float(v))
         return metrics
 
@@ -416,8 +415,8 @@ class SimpleHGN(BaseModel):
     def test_epoch_end(
         self, outputs: Sequence[Dict[str, torch.Tensor]]
     ) -> Dict[str, Union[int, float]]:
-        metrics = {}
-        for k, v in self.evaluate(outputs).items():
+        metrics = self.evaluate(outputs)
+        for k, v in metrics.items():
             self.log(f"{k}_test", float(v))
         return metrics
 

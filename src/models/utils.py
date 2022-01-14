@@ -30,6 +30,8 @@ def get_activation(activation: Optional[Union[str, Callable]]) -> Callable:
     activation = activation.lower()
     if activation == "elu":
         return nn.ELU()
+    if activation == "relu":
+        return nn.ReLU()
     if activation == "tanh":
         return nn.Tanh()
     raise ValueError(f"Activation '{activation}' is not supported.")

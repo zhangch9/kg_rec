@@ -56,12 +56,14 @@ def read_data_kgat(
     return ratings_train, ratings_test, triplets_kg
 
 
-def build_adj_list_kg(
+def adj_list_from_triplets(
     triplets: np.ndarray,
     reverse_triplet: bool = False,
     reverse_relation: bool = False,
 ) -> Dict[int, Tuple[int, int]]:
-    """
+    """Constructs an adjacent lists from triplets.
+    Each triplet is in the form of `(head_id, relation_id, tail_id)`.
+
     Args:
         triplets: A `numpy.ndarray`` object of shape `[num_triplets, 3]`, each
             row is a `(head_id, relation_id, tail_id)` triplet.
@@ -73,16 +75,16 @@ def build_adj_list_kg(
     assert triplets.shape[1] == 3
 
     num_relations = triplets[:, 1].max() + 1
-    adj_list_kg = defaultdict(list)
+    adj_list = defaultdict(list)
     for eid_h, rid, eid_t in triplets:
-        adj_list_kg[eid_h].append((rid, eid_t))
+        adj_list[eid_h].append((rid, eid_t))
         if reverse_triplet:
             if reverse_relation:
                 rid_rev = rid + num_relations
             else:
                 rid_rev = rid
-            adj_list_kg[eid_t].append((rid_rev, eid_h))
-    return adj_list_kg
+            adj_list[eid_t].append((rid_rev, eid_h))
+    return adj_list
 
 
 def normalize_matrix(m: sp.spmatrix, r: float) -> sp.csr_matrix:

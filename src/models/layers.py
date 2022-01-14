@@ -16,6 +16,75 @@ from dgl import function as dgl_fn  # isort: skip
 from dgl.nn.pytorch import edge_softmax  # isort: skip
 
 
+class KGCLayer(nn.Module):
+    def __init__(
+        self,
+        input_dim: int,
+        output_dim: int,
+        aggregation: str = "cat",
+        bias: bool = True,
+        activation: str = "relu",
+        dropout: float = 0.0,
+        dropout_attn: float = 0.0,
+    ):
+        super().__init__()
+        aggregation = aggregation.lower()
+        if aggregation not in {"cat", "sum"}:
+            raise ValueError(
+                f"Aggregation method '{aggregation}' is not supported."
+            )
+        self._aggregation = aggregation
+
+        if self._aggregation == "cat":
+            self.fc = nn.Linear(input_dim * 2, output_dim, bias=bias)
+        else:
+            self.fc = nn.Linear(input_dim, output_dim, bias=bias)
+        self.activation = get_activation(activation)
+        self.dropout = nn.Dropout(dropout)
+        self.dropout_attn = nn.Dropout(dropout_attn)
+        self.reset_parameter()
+
+    def reset_parameter(self):
+        if self.fc.bias is not None:
+            nn.init.zeros_(self.fc.bias)
+
+    def forward(
+        self,
+        queries: torch.Tensor,
+        keys: torch.Tensor,
+        values: torch.Tensor,
+        relations: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Args:
+            queries: A `torch.Tensor` object of shape `[batch_size, dim]`
+            keys: A `torch.Tensor` objects of shape
+                `[batch_size, num_values * num_neighbors, dim]`
+            values: A `torch.Tensor` objects of shape
+                `[batch_size, num_values, dim]`
+            relations: A `torch.Tensor` objects of shape
+                `[batch_size, num_values * num_neighbors, dim]`
+        """
+        batch_size, num_values, dim = values.size()
+
+        queries = queries.view(batch_size, 1, 1, dim).contiguous()
+        keys = keys.view(batch_size, num_values, -1, dim).contiguous()
+        relations = relations.view(batch_size, num_values, -1, dim).contiguous()
+
+        logits_rel = torch.sum(queries * relations, dim=3)
+        probs = (
+            self.dropout_attn(F.softmax(logits_rel, dim=2))
+            .unsqueeze(3)
+            .contiguous()
+        )
+        outputs = torch.sum(probs * keys, dim=2)
+        if self._aggregation == "sum":
+            outputs = outputs + values
+        elif self._aggregation == "cat":
+            outputs = torch.cat([outputs, values], dim=2)
+        return self.activation(self.fc(self.dropout(outputs)))
+
+
 class SimpleHGAT(nn.Module):
     def __init__(
         self,

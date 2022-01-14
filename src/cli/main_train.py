@@ -205,7 +205,7 @@ def main(args: Namespace):
     )
     args.checkpoint.mode = args.early_stopping.mode or args.checkpoint.mode
     args.trainer.callbacks.append(
-        pl.callbacks.ModelCheckpoint(**args.checkpoint)
+        pl.callbacks.ModelCheckpoint(save_last=True, **args.checkpoint)
     )
     trainer = pl.Trainer(**args.trainer)
 

@@ -1,28 +1,37 @@
-data_module:
-  class_path: src.data.CTRPredictionDataModule
-  init_args:
-    dataset: lastfm
-    data_dir: data/processed/lastfm/seed_0
-    mode: kgcn
-    max_hop: 1
-    num_neighbors: 8
-    reverse_triplet: true
-    batch_size_train: 128
-    num_workers: 8
 model:
   class_path: src.models.KGCN
   init_args:
+    dataset: lastfm
+    data_dir: data/processed/lastfm/seed_0
+    num_neighbors: 8
     embed_dim: 16
+    num_layers: 1
+    aggregation: sum
+    weight_ls: 0.0
+    batch_size_train: 128
+    num_workers: 16
 optim:
   optimizer:
     class_path: torch.optim.AdamW
     init_args:
-      lr: 0.0001
+      lr: 0.003
+      weight_decay: 1.
 trainer:
+  logger:
+    class_path: pytorch_lightning.loggers.MLFlowLogger
+    init_args:
+      experiment_name: lastfm_kgcn
+      tracking_uri: file:mlruns
   gpus:
-  - 1
+    - 0
   check_val_every_n_epoch: 1
-  max_epochs: 10
+  max_epochs: 30
   num_sanity_val_steps: -1
+early_stopping:
+  monitor: auc_val
+  patience: 20
+  mode: max
+checkpoint:
+  save_top_k: 3
 seed: 0
 verbose: 1

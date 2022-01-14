@@ -16,7 +16,6 @@ from torch.utils.data import (
 from torch.utils.data.dataloader import default_collate
 
 import dgl  # isort: skip
-from dgl.sampling import sample_neighbors  # isort: skip
 
 
 class BaseDataset(Dataset):
@@ -36,59 +35,6 @@ class BaseDataset(Dataset):
         else:
             sampler = SequentialSampler(self)
         return BatchSampler(sampler, batch_size, drop_last=drop_last)
-
-
-class KGCNDataset(BaseDataset):
-    def __init__(
-        self,
-        ratings: torch.Tensor,
-        graph: dgl.DGLGraph,
-        feats_edge: torch.Tensor,
-        num_neighbors: int,
-    ):
-        super().__init__()
-        self._ratings = ratings
-        self._graph = graph
-        self._feat_edges = feats_edge
-
-        self._num_neighbors = num_neighbors
-
-        self._size = self._ratings.size(0)
-
-    def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
-        uid, iid, label = self._ratings[index]
-        subgraph = sample_neighbors(
-            self._graph, [iid], self._num_neighbors, replace=False
-        )
-        src, _ = subgraph.edges(order="eid")
-        feats_edge = self._feat_edges[subgraph.edata[dgl.EID]]
-        return {
-            "uids": uid,
-            "iids": iid,
-            "labels": label,
-            "neighbors": src,
-            "feats_edge": feats_edge,
-            "num_neighbors": src.size(0),
-        }
-
-    def __len__(self):
-        return self._size
-
-    def collate(
-        self, samples: Sequence[Dict[str, torch.Tensor]]
-    ) -> Dict[str, torch.Tensor]:
-        sample = samples[0]
-        batch = {}
-        for key in sample:
-            if key in {"neighbors", "feats_edge"}:
-                batch[key] = pad_sequence(
-                    [s[key] for s in samples],
-                    batch_first=True,
-                    padding_value=0.0,
-                )
-            else:
-                batch[key] = default_collate([s[key] for s in samples])
-        return batch
 
 
 class RippleDataset(BaseDataset):

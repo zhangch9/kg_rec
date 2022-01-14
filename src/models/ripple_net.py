@@ -4,7 +4,7 @@
 
 import math
 from collections import defaultdict
-from typing import Any, Dict, Optional, Sequence, Tuple, Union
+from typing import Dict, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import torch
@@ -17,7 +17,7 @@ from torch.nn import functional as F
 from torch.utils.data import DataLoader
 
 from ..data import RippleDataset, create_dataloader
-from ..data.utils import build_adj_list_kg, read_data_lastfm
+from ..data.utils import adj_list_from_triplets, read_data_lastfm
 from .base import BaseModel
 
 
@@ -30,7 +30,7 @@ class RippleNet(BaseModel):
         max_hop: PositiveInt,
         num_neighbors: PositiveInt,
         embed_dim: PositiveInt,
-        weight_loss_kg: float = 0.0,
+        weight_kg: float = 0.0,
         val_ratio: OpenUnitInterval = 0.2,
         test_ratio: OpenUnitInterval = 0.2,
         batch_size_train: PositiveInt = 32,
@@ -48,7 +48,9 @@ class RippleNet(BaseModel):
             max_hop: Stop expanding neighbors once this many hops is reached.
             num_neighbors: Size of the neighborhood for each hop.
             embed_dim: Dimension of the embedding space.
-            weight_loss_kg: Weight of the loss on knowledge graph triplets.
+            weight_kg: Weight of the loss on knowledge graph triplets. If set
+            to a negative number, the loss on knowledge graph triplets will be
+            ignored.
             val_ratio: A value between 0.0 and 1.0 representing the proportion
                 of the dataset to include in the validation split.
             test_ratio: A value between 0.0 and 1.0 representing the proportion
@@ -66,14 +68,13 @@ class RippleNet(BaseModel):
         """
         super().__init__(optim_args)
         self.save_hyperparameters()
+        self._weight_kg = weight_kg
         # Arguments for dataloader
         self._batch_size_train = batch_size_train
         self._batch_size_val = batch_size_val or self._batch_size_train
         self._batch_size_test = batch_size_test or self._batch_size_val
         self._num_workers = num_workers
         self._pin_memory = pin_memory
-
-        self._weight_loss_kg = weight_loss_kg
 
         self._num_users = 0
         self._num_entities = 0
@@ -127,7 +128,7 @@ class RippleNet(BaseModel):
         for uid, iid, label in ratings_train:
             if label == 1:
                 history[uid].append(iid)
-        adj_list_kg = build_adj_list_kg(triplets_kg, reverse_triplet=True)
+        adj_list_kg = adj_list_from_triplets(triplets_kg, reverse_triplet=True)
 
         # `uid` -> `ripple_set`
         # Each `ripple_set` is a `torch.Tensor` of shape
@@ -149,9 +150,9 @@ class RippleNet(BaseModel):
                 if len(nbr_h) == 0:
                     ripple_u.append(ripple_u[-1])
                 else:
-                    rng = len(nbr_h)
+                    pop = len(nbr_h)
                     indices = np.random.choice(
-                        rng, size=num_neighbors, replace=rng < num_neighbors
+                        pop, size=num_neighbors, replace=pop < num_neighbors
                     )
                     nbr_h = [nbr_h[i] for i in indices]
                     nbr_r = [nbr_r[i] for i in indices]
@@ -183,11 +184,11 @@ class RippleNet(BaseModel):
         )
 
     def reset_parameters(self):
-        fan_out = self.embeddings_entity.size(1)
-        nn.init.normal_(self.embeddings_entity, std=1 / math.sqrt(fan_out))
+        a = math.sqrt(3 / self.embeddings_entity.size(1))
+        nn.init.uniform_(self.embeddings_entity, -a, a)
 
-        fan_out = self.embeddings_relation.size(1)
-        nn.init.normal_(self.embeddings_relation, std=1 / math.sqrt(fan_out))
+        a = math.sqrt(3 / self.embeddings_relation.size(1))
+        nn.init.uniform_(self.embeddings_relation, -a, a)
 
     def train_dataloader(self) -> DataLoader:
         return create_dataloader(
@@ -243,11 +244,17 @@ class RippleNet(BaseModel):
         inputs_relation: Sequence[torch.Tensor],
         inputs_tail: Sequence[torch.Tensor],
     ) -> torch.Tensor:
-        # `inputs_item`: A `torch.Tensor` object of shape `[batch_size, dim]``
-        # `inputs_head`, `inputs_tail`: A list of `torch.Tensor` objects of
-        # shape `[batch_size, num_memory, dim]`
-        # `inputs_relation`: A list of `torch.Tensor` objects of shape
-        # `[batch_size, num_memory, dim, dim]`
+        """Computes logits of input data.
+
+        Args:
+            inputs_item: A `torch.Tensor` object of shape `[batch_size, dim]`
+            inputs_head: A list of `torch.Tensor` objects of shape
+                `[batch_size, num_memory, dim]`
+            inputs_relation: A list of `torch.Tensor` objects of shape
+                `[batch_size, num_memory, dim, dim]`
+            inputs_tail: A list of `torch.Tensor` objects of shape
+                `[batch_size, num_memory, dim]`
+        """
         query = inputs_item
         num_hops = len(inputs_head)
         values = []
@@ -286,9 +293,14 @@ class RippleNet(BaseModel):
             logits, target=batch["labels"].float()
         )
         weight_cls = logits.numel()
-        loss_kg = 0.0
-        weight_kg = 0
-        if self._weight_loss_kg > 0:
+        loss = loss_cls
+        outputs = {
+            "loss_cls": loss_cls.detach(),
+            "weight_cls": weight_cls,
+        }
+        if self._weight_kg > 0:
+            loss_kg = 0.0
+            weight_kg = 0
             num_hops = len(embs_head)
             for hop in range(num_hops):
                 r_t = (
@@ -302,14 +314,12 @@ class RippleNet(BaseModel):
                 logits = torch.sum(embs_head[hop] * r_t, dim=2)
                 loss_kg += torch.sigmoid(logits).sum()
                 weight_kg += logits.numel()
-            loss_kg = -self._weight_loss_kg * loss_kg / float(weight_kg)
-        return {
-            "loss": loss_cls + loss_kg,
-            "loss_cls": loss_cls.detach(),
-            "weight_cls": weight_cls,
-            "loss_kg": loss_kg.detach(),
-            "weight_kg": weight_kg,
-        }
+            loss_kg = -loss_kg / float(weight_kg)
+            loss += self._weight_kg * loss_kg
+            outputs["loss_kg"] = loss_kg.detach()
+            outputs["weight_kg"] = weight_kg
+        outputs["loss"] = loss
+        return outputs
 
     def training_epoch_end(
         self, outputs: Sequence[Dict[str, Union[torch.Tensor, int]]]
@@ -320,16 +330,20 @@ class RippleNet(BaseModel):
         loss_kg = 0.0
         weight_kg = 0.0
         for out in outputs:
-            loss += out["loss"].item()
-            loss_cls += out["loss_cls"].item()
+            loss += out["loss"].item() * out["weight_cls"]
+            loss_cls += out["loss_cls"].item() * out["weight_cls"]
             weight_cls += out["weight_cls"]
-            loss_kg += out["loss_kg"].item()
-            weight_kg += out["weight_kg"]
+            if self._weight_kg > 0.0:
+                loss_kg += out["loss_kg"].item() * out["weight_kg"]
+                weight_kg += out.get("weight_kg", 0)
         weight_cls = float(weight_cls)
         weight_kg = float(weight_kg)
         self.log("loss", loss / weight_cls)
         self.log("loss_cls", loss_cls / weight_cls)
-        self.log("loss_kg", loss_kg / weight_kg)
+        self.log("weight_cls", weight_cls)
+        if self._weight_kg > 0.0:
+            self.log("loss_kg", loss_kg / weight_kg)
+            self.log("weight_kg", weight_kg)
 
     def validation_step(
         self, batch: Dict[str, torch.Tensor], batch_idx: int
@@ -349,8 +363,8 @@ class RippleNet(BaseModel):
     def validation_epoch_end(
         self, outputs: Sequence[Dict[str, torch.Tensor]]
     ) -> Dict[str, Union[int, float]]:
-        metrics = {}
-        for k, v in self.evaluate(outputs).items():
+        metrics = self.evaluate(outputs)
+        for k, v in metrics.items():
             self.log(f"{k}_val", float(v))
         return metrics
 
@@ -362,8 +376,8 @@ class RippleNet(BaseModel):
     def test_epoch_end(
         self, outputs: Sequence[Dict[str, torch.Tensor]]
     ) -> Dict[str, Union[int, float]]:
-        metrics = {}
-        for k, v in self.evaluate(outputs).items():
+        metrics = self.evaluate(outputs)
+        for k, v in metrics.items():
             self.log(f"{k}_test", float(v))
         return metrics
 

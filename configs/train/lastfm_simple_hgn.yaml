@@ -24,7 +24,7 @@ trainer:
       experiment_name: lastfm_simple_hgn
       tracking_uri: file:mlruns
   gpus:
-  - 1
+    - 0
   check_val_every_n_epoch: 1
   max_epochs: 100
   num_sanity_val_steps: -1
