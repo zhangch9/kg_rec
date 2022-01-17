@@ -38,22 +38,19 @@ class BaseDataset(Dataset):
 
 
 class RippleDataset(BaseDataset):
-    def __init__(
-        self, ratings: torch.Tensor, ripple_set: Dict[int, torch.Tensor]
-    ):
+    def __init__(self, ratings: torch.Tensor, ripple_sets: torch.Tensor):
         super().__init__()
         self._ratings = ratings
-        # uid -> a `torch.Tensor` object of shape [max_hop, 3, num_neighbors]
-        self._ripple_set = ripple_set
+        self._ripple_sets = ripple_sets
 
         self._size = self._ratings.size(0)
 
     def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
         uid, iid, label = self._ratings[index]
-        ripple_set_u = self._ripple_set[uid.item()]
+        ripple_set = self._ripple_sets[uid]
         return {
             "iids": iid,
-            "ripple_sets": ripple_set_u,
+            "ripple_sets": ripple_set,
             "labels": label,
         }
 

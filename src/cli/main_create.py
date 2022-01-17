@@ -19,11 +19,6 @@ from .logging_utils import add_options_logging, initialize_logging
 logger = logging.getLogger(__name__)
 
 
-def _add_options_common(parser: ArgumentParser):
-    add_options_logging(parser)
-    parser.add_argument("--config", action=ActionConfigFile)
-
-
 def generate_parser(
     sub_commands: Optional[_ActionSubCommands] = None,
 ) -> ArgumentParser:
@@ -36,19 +31,17 @@ def generate_parser(
     )
 
     parser_lastfm = ArgumentParser(description="Create the Last.fm dataset.")
-    parser_lastfm.add_function_arguments(
-        create_lastfm, nested_key="args", as_group=True
-    )
-    _add_options_common(parser_lastfm)
+    parser_lastfm.add_argument("--config", action=ActionConfigFile)
+    parser_lastfm.add_function_arguments(create_lastfm, as_group=True)
+    add_options_logging(parser_lastfm)
     sub_commands.add_subcommand(
         "lastfm", parser_lastfm, help=parser_lastfm.description
     )
 
     parser_yelp = ArgumentParser(description="Create the Yelp dataset.")
-    parser_yelp.add_function_arguments(
-        create_yelp, nested_key="args", as_group=True
-    )
-    _add_options_common(parser_yelp)
+    parser_yelp.add_argument("--config", action=ActionConfigFile)
+    parser_yelp.add_function_arguments(create_yelp, as_group=True)
+    add_options_logging(parser_yelp)
     sub_commands.add_subcommand(
         "yelp", parser_yelp, help=parser_yelp.description
     )
@@ -416,5 +409,6 @@ DATASET_FUNC = {"lastfm": create_lastfm, "yelp": create_yelp}
 def main(args: Namespace):
     fn = DATASET_FUNC[args.dataset]
     args = getattr(args, args.dataset)
-    initialize_logging(args.verbose)
-    fn(**args.args)
+    initialize_logging(args.pop("verbose"))
+    args.pop("config")
+    fn(**args)

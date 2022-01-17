@@ -3,15 +3,16 @@ model:
   init_args:
     dataset: lastfm
     data_dir: data/processed/lastfm/seed_0
-    embed_dim: 64
-    num_layers: 2
-    hidden_dims_node: [32, 16]
-    hidden_dims_edge: 64
+    embed_dim: 16
+    num_layers: 1
+    hidden_dims_node: [16]
+    hidden_dims_edge: 16
     num_heads: 1
     activation: elu
     dropout: 0.1
-    use_edges_user: true
-    batch_size_train: 256
+    use_edges_user: False
+    batch_size_train: 128
+    num_workers: 16
 optim:
   optimizer:
     class_path: torch.optim.AdamW

@@ -7,7 +7,6 @@ from typing import Any, Dict, List, Tuple
 import pytorch_lightning as pl
 from jsonargparse import Namespace
 from jsonargparse.util import import_object
-from torchmetrics import MeanMetric
 
 
 class BaseModel(pl.LightningModule):

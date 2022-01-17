@@ -2,7 +2,10 @@
 """Implements the RippleNet model."""
 
 
+import logging
 import math
+import multiprocessing as mp
+import time
 from collections import defaultdict
 from typing import Dict, Optional, Sequence, Tuple, Union
 
@@ -19,6 +22,8 @@ from torch.utils.data import DataLoader
 from ..data import RippleDataset, create_dataloader
 from ..data.utils import adj_list_from_triplets, read_data_lastfm
 from .base import BaseModel
+
+logger = logging.getLogger(__name__)
 
 
 class RippleNet(BaseModel):
@@ -128,59 +133,70 @@ class RippleNet(BaseModel):
         for uid, iid, label in ratings_train:
             if label == 1:
                 history[uid].append(iid)
+        uids_valid = list(history.keys())
+
+        # `ripple_sets`: a `torch.Tensor` of shape
+        # `[num_users, max_hop, 3, num_neighbors]`.
         adj_list_kg = adj_list_from_triplets(triplets_kg, reverse_triplet=True)
+        logger.info("===== Building ripple sets ... ======")
+        start = time.perf_counter()
+        ripple_sets = torch.empty(
+            self._num_users, max_hop, 3, num_neighbors, dtype=torch.long
+        )
 
-        # `uid` -> `ripple_set`
-        # Each `ripple_set` is a `torch.Tensor` of shape
-        # `[max_hop, 3, num_neighbors]`.
-        ripple_set = {}
-        for uid in history:
-            ripple_u = []
-            for hop in range(max_hop):
-                nbr_h, nbr_r, nbr_t = [], [], []
-                if hop == 0:
-                    eids_h = history[uid]
-                else:
-                    eids_h = ripple_u[-1][2]
-                for eid_h in eids_h:
-                    for (rid, eid_t) in adj_list_kg[eid_h]:
-                        nbr_h.append(eid_h)
-                        nbr_r.append(rid)
-                        nbr_t.append(eid_t)
-                if len(nbr_h) == 0:
-                    ripple_u.append(ripple_u[-1])
-                else:
-                    pop = len(nbr_h)
-                    indices = np.random.choice(
-                        pop, size=num_neighbors, replace=pop < num_neighbors
-                    )
-                    nbr_h = [nbr_h[i] for i in indices]
-                    nbr_r = [nbr_r[i] for i in indices]
-                    nbr_t = [nbr_t[i] for i in indices]
-                    ripple_u.append((nbr_h, nbr_r, nbr_t))
-            ripple_set[uid] = torch.as_tensor(ripple_u, dtype=torch.long)
+        queue_task = mp.JoinableQueue()
+        queue_res = mp.JoinableQueue()
+        workers = []
+        for _ in range(self._num_workers):
+            worker = _Worker(
+                queue_task, queue_res, max_hop, num_neighbors, adj_list_kg
+            )
+            worker.daemon = True
+            worker.start()
+            workers.append(worker)
 
-        uids_valid = list(ripple_set.keys())
+        num_tasks = 0
+        for uid in uids_valid:
+            num_tasks += 1
+            queue_task.put((uid, history[uid]))
+        for _ in range(self._num_workers):
+            queue_task.put(None)
+
+        queue_task.join()
+
+        for _ in range(len(uids_valid)):
+            uid, ripple_set = queue_res.get()
+            queue_res.task_done()
+            ripple_sets[uid] = torch.as_tensor(ripple_set, dtype=torch.long)
+        queue_res.join()
+        for worker in workers:
+            worker.join()
+
+        logger.info(
+            "===== Building ripple sets: Done. "
+            f"({time.perf_counter() - start:.3f}s) ======"
+        )
+
         self._dataset_train = RippleDataset(
             torch.as_tensor(
                 ratings_train[np.isin(ratings_train[:, 0], uids_valid)],
                 dtype=torch.long,
             ),
-            ripple_set,
+            ripple_sets,
         )
         self._dataset_val = RippleDataset(
             torch.as_tensor(
                 ratings_val[np.isin(ratings_val[:, 0], uids_valid)],
                 dtype=torch.long,
             ),
-            ripple_set,
+            ripple_sets,
         )
         self._dataset_test = RippleDataset(
             torch.as_tensor(
                 ratings_test[np.isin(ratings_test[:, 0], uids_valid)],
                 dtype=torch.long,
             ),
-            ripple_set,
+            ripple_sets,
         )
 
     def reset_parameters(self):
@@ -292,15 +308,15 @@ class RippleNet(BaseModel):
         loss_cls = F.binary_cross_entropy_with_logits(
             logits, target=batch["labels"].float()
         )
-        weight_cls = logits.numel()
+        wt_cls = logits.numel()
         loss = loss_cls
         outputs = {
             "loss_cls": loss_cls.detach(),
-            "weight_cls": weight_cls,
+            "wt_cls": wt_cls,
         }
         if self._weight_kg > 0:
             loss_kg = 0.0
-            weight_kg = 0
+            wt_kg = 0
             num_hops = len(embs_head)
             for hop in range(num_hops):
                 r_t = (
@@ -313,11 +329,11 @@ class RippleNet(BaseModel):
                 )
                 logits = torch.sum(embs_head[hop] * r_t, dim=2)
                 loss_kg += torch.sigmoid(logits).sum()
-                weight_kg += logits.numel()
-            loss_kg = -loss_kg / float(weight_kg)
+                wt_kg += logits.numel()
+            loss_kg = -loss_kg / float(wt_kg)
             loss += self._weight_kg * loss_kg
             outputs["loss_kg"] = loss_kg.detach()
-            outputs["weight_kg"] = weight_kg
+            outputs["wt_kg"] = wt_kg
         outputs["loss"] = loss
         return outputs
 
@@ -326,24 +342,24 @@ class RippleNet(BaseModel):
     ):
         loss = 0.0
         loss_cls = 0.0
-        weight_cls = 0.0
+        wt_cls = 0.0
         loss_kg = 0.0
-        weight_kg = 0.0
+        wt_kg = 0.0
         for out in outputs:
-            loss += out["loss"].item() * out["weight_cls"]
-            loss_cls += out["loss_cls"].item() * out["weight_cls"]
-            weight_cls += out["weight_cls"]
+            loss += out["loss"].item() * out["wt_cls"]
+            loss_cls += out["loss_cls"].item() * out["wt_cls"]
+            wt_cls += out["wt_cls"]
             if self._weight_kg > 0.0:
-                loss_kg += out["loss_kg"].item() * out["weight_kg"]
-                weight_kg += out.get("weight_kg", 0)
-        weight_cls = float(weight_cls)
-        weight_kg = float(weight_kg)
-        self.log("loss", loss / weight_cls)
-        self.log("loss_cls", loss_cls / weight_cls)
-        self.log("weight_cls", weight_cls)
+                loss_kg += out["loss_kg"].item() * out["wt_kg"]
+                wt_kg += out.get("wt_kg", 0)
+        wt_cls = float(wt_cls)
+        wt_kg = float(wt_kg)
+        self.log("loss", loss / wt_cls)
+        self.log("loss_cls", loss_cls / wt_cls)
+        self.log("wt_cls", wt_cls)
         if self._weight_kg > 0.0:
-            self.log("loss_kg", loss_kg / weight_kg)
-            self.log("weight_kg", weight_kg)
+            self.log("loss_kg", loss_kg / wt_kg)
+            self.log("wt_kg", wt_kg)
 
     def validation_step(
         self, batch: Dict[str, torch.Tensor], batch_idx: int
@@ -397,3 +413,55 @@ class RippleNet(BaseModel):
             "auc": roc_auc_score(y_true=labels, y_score=probs),
             "f1": f1_score(y_true=labels, y_pred=preds),
         }
+
+
+class _Worker(mp.Process):
+    def __init__(
+        self,
+        queue_task: mp.JoinableQueue,
+        queue_res: mp.JoinableQueue,
+        max_hop: int,
+        num_neighbors: int,
+        adj_list_kg: Dict[int, Tuple[int, int]],
+    ):
+        super().__init__()
+        self._queue_task = queue_task
+        self._queue_res = queue_res
+        self._max_hop = max_hop
+        self._num_neighbors = num_neighbors
+        self._adj_list_kg = adj_list_kg
+
+    def run(self):
+        while True:
+            task = self._queue_task.get()
+            if task is None:
+                self._queue_task.task_done()
+                break
+            uid, history = task
+            ripple_set = []
+            for hop in range(self._max_hop):
+                nbr_h, nbr_r, nbr_t = [], [], []
+                if hop == 0:
+                    eids_h = history
+                else:
+                    eids_h = ripple_set[-1][2]
+                for eid_h in eids_h:
+                    for (rid, eid_t) in self._adj_list_kg[eid_h]:
+                        nbr_h.append(eid_h)
+                        nbr_r.append(rid)
+                        nbr_t.append(eid_t)
+                if len(nbr_h) == 0:
+                    ripple_set.append(ripple_set[-1])
+                else:
+                    pop = len(nbr_h)
+                    indices = np.random.choice(
+                        pop,
+                        size=self._num_neighbors,
+                        replace=pop < self._num_neighbors,
+                    )
+                    nbr_h = [nbr_h[i] for i in indices]
+                    nbr_r = [nbr_r[i] for i in indices]
+                    nbr_t = [nbr_t[i] for i in indices]
+                    ripple_set.append((nbr_h, nbr_r, nbr_t))
+            self._queue_res.put((uid, ripple_set))
+            self._queue_task.task_done()

@@ -411,15 +411,15 @@ class KGCN(BaseModel):
         loss_cls = F.binary_cross_entropy_with_logits(
             logits, target=batch["labels"].float()
         )
-        weight_cls = logits.numel()
+        wt_cls = logits.numel()
         loss = loss_cls
         outputs = {
             "loss_cls": loss_cls.detach(),
-            "weight_cls": weight_cls,
+            "wt_cls": wt_cls,
         }
-        if self._weight_ls > 0:
+        if self._weight_ls > 0.0:
             loss_ls = 0.0
-            weight_ls = 0
+            wt_ls = 0
             uids = batch["uids"]
             batch_size = uids.size(0)
             uids = uids.view(batch_size, 1).contiguous()
@@ -455,34 +455,34 @@ class KGCN(BaseModel):
             loss_ls = F.binary_cross_entropy_with_logits(
                 logits, target=batch["labels"].float()
             )
-            weight_ls = logits.numel()
+            wt_ls = logits.numel()
             loss += self._weight_ls * loss_ls
             outputs["loss_ls"] = loss_ls.detach()
-            outputs["weight_ls"] = weight_ls
+            outputs["wt_ls"] = wt_ls
         outputs["loss"] = loss
         return outputs
 
     def training_epoch_end(self, outputs: Sequence[torch.Tensor]):
         loss = 0.0
         loss_cls = 0.0
-        weight_cls = 0.0
+        wt_cls = 0.0
         loss_ls = 0.0
-        weight_ls = 0.0
+        wt_ls = 0.0
         for out in outputs:
-            loss += out["loss"].item() * out["weight_cls"]
-            loss_cls += out["loss_cls"].item() * out["weight_cls"]
-            weight_cls += out["weight_cls"]
+            loss += out["loss"].item() * out["wt_cls"]
+            loss_cls += out["loss_cls"].item() * out["wt_cls"]
+            wt_cls += out["wt_cls"]
             if self._weight_ls > 0.0:
-                loss_ls += out["loss_ls"].item() * out["weight_ls"]
-                weight_ls += out["weight_ls"]
-        weight_cls = float(weight_cls)
-        weight_ls = float(weight_ls)
-        self.log("loss", loss / weight_cls)
-        self.log("loss_cls", loss_cls / weight_cls)
-        self.log("weight_cls", weight_cls)
+                loss_ls += out["loss_ls"].item() * out["wt_ls"]
+                wt_ls += out["wt_ls"]
+        wt_cls = float(wt_cls)
+        wt_ls = float(wt_ls)
+        self.log("loss", loss / wt_cls)
+        self.log("loss_cls", loss_cls / wt_cls)
+        self.log("wt_cls", wt_cls)
         if self._weight_ls > 0.0:
-            self.log("loss_kg", loss_ls / weight_ls)
-            self.log("weight_kg", weight_ls)
+            self.log("loss_kg", loss_ls / wt_ls)
+            self.log("wt_kg", wt_ls)
 
     def validation_step(
         self, batch: Dict[str, torch.Tensor], batch_idx: int

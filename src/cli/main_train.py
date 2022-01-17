@@ -2,9 +2,11 @@
 """Entrypoint for command `train'."""
 
 
+import copy
 import logging
-from typing import Optional, Sequence
+from typing import Dict, Optional, Union
 
+import numpy as np
 import pytorch_lightning as pl
 from jsonargparse import ActionConfigFile, ArgumentParser, Namespace
 from jsonargparse.actions import _ActionSubCommands
@@ -12,7 +14,7 @@ from jsonargparse.util import import_object
 from pytorch_lightning.loggers import LightningLoggerBase
 from torch.optim import Optimizer
 
-from ..models import KGCN, BaseModel, RippleNet, SimpleHGN
+from ..models import BaseModel
 from .logging_utils import add_options_logging, initialize_logging
 
 import dgl  # isort: skip
@@ -29,6 +31,13 @@ def generate_parser(
     )
     if sub_commands:
         sub_commands.add_subcommand("train", parser, help=parser.description)
+    parser.add_argument("--config", action=ActionConfigFile)
+    parser.add_argument(
+        "--num_runs",
+        type=int,
+        default=3,
+        help="Train the model for this many times.",
+    )
     parser.add_argument(
         "--seed",
         type=Optional[int],
@@ -73,7 +82,6 @@ def generate_parser(
     _add_options_early_stopping(parser)
     _add_options_checkpoint(parser)
     add_options_logging(parser)
-    parser.add_argument("--config", action=ActionConfigFile)
     return parser
 
 
@@ -166,8 +174,7 @@ def _add_options_checkpoint(parser: ArgumentParser):
     )
 
 
-def main(args: Namespace):
-    initialize_logging(args.verbose)
+def train(args: Namespace) -> Dict[str, Union[int, float]]:
     if args.seed is not None:
         pl.seed_everything(args.seed)
         dgl.seed(args.seed)
@@ -210,4 +217,23 @@ def main(args: Namespace):
     trainer = pl.Trainer(**args.trainer)
 
     trainer.fit(model)
-    trainer.test(ckpt_path="best")
+    if args.checkpoint.monitor is not None and args.checkpoint.save_top_k > 0:
+        metrics = trainer.test(ckpt_path="best")
+    else:
+        metrics = trainer.test(model, ckpt_path=None)
+    return metrics[0]
+
+
+def main(args: Namespace):
+    initialize_logging(args.pop("verbose"))
+    num_runs = args.pop("num_runs")
+    if num_runs > 1:
+        args.seed = None
+    metrics_per_run = []
+    for _ in range(num_runs):
+        metrics_per_run.append(train(copy.deepcopy(args)))
+    metrics = metrics_per_run[0]
+    print(f"Summary of {len(metrics_per_run)} runs:")
+    for k in metrics:
+        values = np.asarray([m[k] for m in metrics_per_run])
+        print(f"{k}_avg = {np.mean(values)}, {k}_std = {np.std(values)}")

@@ -4,8 +4,8 @@ model:
     dataset: lastfm
     data_dir: data/processed/yelp/core_10_seed_0
     max_hop: 3
-    num_neighbors: 32
-    embed_dim: 16
+    num_neighbors: 16
+    embed_dim: 32
     batch_size_train: 4096
     num_workers: 16
     weight_kg: 0.02
@@ -19,12 +19,12 @@ trainer:
   logger:
     class_path: pytorch_lightning.loggers.MLFlowLogger
     init_args:
-      experiment_name: lastfm_ripple_net
+      experiment_name: yelp_ripple_net
       tracking_uri: file:mlruns
   gpus:
     - 0
   check_val_every_n_epoch: 1
-  max_epochs: 50
+  max_epochs: 100
   num_sanity_val_steps: -1
 early_stopping:
   monitor: auc_val

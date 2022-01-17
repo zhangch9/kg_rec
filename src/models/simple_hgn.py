@@ -150,6 +150,7 @@ class SimpleHGN(BaseModel):
         )
         feat_dim_edge = self.feats_edge.size(1)
         self.hgat_layers = nn.ModuleList()
+        # disable residual at the first layer
         self.hgat_layers.append(
             SimpleHGAT(
                 embed_dim,
@@ -375,19 +376,19 @@ class SimpleHGN(BaseModel):
         loss = F.binary_cross_entropy_with_logits(
             logits, target=batch["labels"].float()
         )
-        return {"loss": loss, "weight": logits.numel()}
+        return {"loss": loss, "wt": logits.numel()}
 
     def training_epoch_end(
         self, outputs: Sequence[Dict[str, Union[torch.Tensor, int]]]
     ):
         loss = 0.0
-        weight = 0.0
+        wt = 0.0
         for out in outputs:
-            loss += out["loss"].item() * out["weight"]
-            weight += out["weight"]
-        weight = float(weight)
-        self.log("loss", loss / weight)
-        self.log("weight", weight)
+            loss += out["loss"].item() * out["wt"]
+            wt += out["wt"]
+        wt = float(wt)
+        self.log("loss", loss / wt)
+        self.log("wt", wt)
 
     def validation_step(
         self, batch: Dict[str, torch.Tensor], batch_idx: int
