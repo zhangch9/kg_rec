@@ -127,9 +127,8 @@ def create_lastfm(raw_dir: str, save_dir: str, seed: int = 0):
         for line in fin:
             head, relation, tail = line.strip().split("\t")
             head, tail = int(head), int(tail)
-            if head not in entity_eid:
-                entity_eid[head] = num_eids
-                num_eids += 1
+            # The head of each knowledge graph triplet is an item.
+            assert head in entity_eid and entity_eid[head] in iid_set
             if tail not in entity_eid:
                 entity_eid[tail] = num_eids
                 num_eids += 1

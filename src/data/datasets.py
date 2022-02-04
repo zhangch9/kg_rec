@@ -15,6 +15,7 @@ from torch.utils.data import (
 )
 from torch.utils.data.dataloader import default_collate
 
+# import after torch
 import dgl  # isort: skip
 
 
@@ -35,27 +36,6 @@ class BaseDataset(Dataset):
         else:
             sampler = SequentialSampler(self)
         return BatchSampler(sampler, batch_size, drop_last=drop_last)
-
-
-class RippleDataset(BaseDataset):
-    def __init__(self, ratings: torch.Tensor, ripple_sets: torch.Tensor):
-        super().__init__()
-        self._ratings = ratings
-        self._ripple_sets = ripple_sets
-
-        self._size = self._ratings.size(0)
-
-    def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
-        uid, iid, label = self._ratings[index]
-        ripple_set = self._ripple_sets[uid]
-        return {
-            "iids": iid,
-            "ripple_sets": ripple_set,
-            "labels": label,
-        }
-
-    def __len__(self):
-        return self._size
 
 
 class CTRPredictionDataset(BaseDataset):
@@ -87,6 +67,9 @@ class BPRDataset(BaseDataset):
 
         self._size = self._uids.size(0)
 
+    def __len__(self) -> int:
+        return self._size
+
     def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
         uid = self._uids[index]
         iids_pos = self._graph_rating.successors(uid)
@@ -116,9 +99,6 @@ class BPRDataset(BaseDataset):
             # "iids_seen": iids_pos,
             # "num_seen": iids_pos.size(0),
         }
-
-    def __len__(self) -> int:
-        return self._size
 
     def collate(
         self, samples: Sequence[Dict[str, torch.Tensor]]

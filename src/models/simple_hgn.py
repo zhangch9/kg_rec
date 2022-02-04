@@ -21,13 +21,16 @@ from torch import nn
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
 
+# isort: off
+# import after torch
+import dgl
+
+# isort: on
 from ..data import CTRPredictionDataset, create_dataloader
 from ..data.utils import read_data_lastfm
 from .base import BaseModel
 from .layers import SimpleHGAT
 from .utils import ensure_list
-
-import dgl  # isort: skip
 
 
 class SimpleHGN(BaseModel):
@@ -181,7 +184,7 @@ class SimpleHGN(BaseModel):
                 )
             )
         self.register_buffer(
-            "eps", torch.Tensor([torch.finfo(torch.float).tiny])
+            "eps", torch.Tensor([torch.finfo(torch.float).eps])
         )
         self.reset_parameters()
 
@@ -368,7 +371,7 @@ class SimpleHGN(BaseModel):
 
     def training_step(
         self, batch: Dict[str, torch.Tensor], batch_idx: int
-    ) -> Dict[str, Union[torch.Tensor, int]]:
+    ) -> Dict[str, Union[torch.Tensor, float]]:
         embeddings_node = self.forward()
         embeddings_user = embeddings_node[batch["uids"]]
         embeddings_item = embeddings_node[batch["iids"]]
@@ -376,19 +379,19 @@ class SimpleHGN(BaseModel):
         loss = F.binary_cross_entropy_with_logits(
             logits, target=batch["labels"].float()
         )
-        return {"loss": loss, "wt": logits.numel()}
+        return {"loss": loss, "wt": float(logits.numel())}
 
     def training_epoch_end(
-        self, outputs: Sequence[Dict[str, Union[torch.Tensor, int]]]
+        self, outputs: Sequence[Dict[str, Union[torch.Tensor, float]]]
     ):
         loss = 0.0
-        wt = 0.0
+        wt_cum = 0.0
         for out in outputs:
-            loss += out["loss"].item() * out["wt"]
-            wt += out["wt"]
-        wt = float(wt)
-        self.log("loss", loss / wt)
-        self.log("wt", wt)
+            wt = out["wt"]
+            loss += out["loss"].item() * wt
+            wt_cum += wt
+        self.log("loss", loss / wt_cum)
+        self.log("wt", wt_cum)
 
     def validation_step(
         self, batch: Dict[str, torch.Tensor], batch_idx: int

@@ -1,4 +1,3 @@
 raw_dir: data/raw/lastfm
 save_dir: data/processed/lastfm
-seed: 0
 verbose: 1

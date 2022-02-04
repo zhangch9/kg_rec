@@ -2,6 +2,7 @@
 """Contains functions for building neural networks."""
 
 
+import math
 from typing import Callable, Iterable, List, Optional, TypeVar, Union
 
 from torch import nn
@@ -35,3 +36,15 @@ def get_activation(activation: Optional[Union[str, Callable]]) -> Callable:
     if activation == "tanh":
         return nn.Tanh()
     raise ValueError(f"Activation '{activation}' is not supported.")
+
+
+def calculate_gain(activation: Optional[nn.Module]) -> float:
+    if activation is None:
+        return 1.0
+    if isinstance(activation, nn.ReLU):
+        return math.sqrt(2.0)
+    if isinstance(activation, nn.Tanh):
+        return 5.0 / 3.0
+    raise ValueError(
+        f"Cannot decide the gain value for activation '{activation}'."
+    )

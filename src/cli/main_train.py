@@ -4,23 +4,56 @@
 
 import copy
 import logging
+from pathlib import Path
 from typing import Dict, Optional, Union
 
 import numpy as np
 import pytorch_lightning as pl
-from jsonargparse import ActionConfigFile, ArgumentParser, Namespace
+import yaml
+from jsonargparse import (
+    ActionConfigFile,
+    ArgumentParser,
+    Namespace,
+    dict_to_namespace,
+    namespace_to_dict,
+)
 from jsonargparse.actions import _ActionSubCommands
+from jsonargparse.typing import Path_fr
 from jsonargparse.util import import_object
 from pytorch_lightning.loggers import LightningLoggerBase
 from torch.optim import Optimizer
 
+# isort: off
+# import after torch
+import dgl
+import optuna
+from optuna.samplers import TPESampler
+from optuna.importance import get_param_importances
+
+# isort: on
 from ..models import BaseModel
 from .logging_utils import add_options_logging, initialize_logging
 
-import dgl  # isort: skip
-
-
 logger = logging.getLogger(__name__)
+
+
+class Objective(object):
+    def __init__(self, metric: str, sampler: Namespace, defaults: Namespace):
+        self._metric = metric
+        self._sampler = sampler
+        self._defaults = defaults
+
+    def __call__(self, trial: optuna.Trial):
+        args = copy.deepcopy(self._defaults)
+        for key in args.keys():
+            value = self._sampler.get(key)
+            if value is not None:
+                value = namespace_to_dict(value)
+                assert len(value) == 1
+                fn, kwargs = next(iter(value.items()))
+                args.update(getattr(trial, fn)(**kwargs), key)
+        outputs = train(args)
+        return outputs["metrics"][self._metric]
 
 
 def generate_parser(
@@ -37,6 +70,12 @@ def generate_parser(
         type=int,
         default=3,
         help="Train the model for this many times.",
+    )
+    parser.add_argument(
+        "--optuna_config",
+        type=Optional[Path_fr],
+        default=None,
+        help="Path to a configuration file for optuna.",
     )
     parser.add_argument(
         "--seed",
@@ -92,9 +131,15 @@ def _add_options_optim(parser: ArgumentParser):
         as_group=True,
         instantiate=True,
         required=True,
-        skip={"params"},
+        skip={"params", "weight_decay"},
     )
     options_optim = parser.add_argument_group("Options for Optimization")
+    options_optim.add_argument(
+        "--optim.weight_decay",
+        type=float,
+        default=0.0,
+        help="Parameter for weight decay.",
+    )
     options_optim.add_argument(
         "--optim.grad_clip_val",
         type=float,
@@ -174,13 +219,21 @@ def _add_options_checkpoint(parser: ArgumentParser):
     )
 
 
-def train(args: Namespace) -> Dict[str, Union[int, float]]:
+def _run_train(args: Namespace) -> Dict[str, Union[int, float]]:
     if args.seed is not None:
         pl.seed_everything(args.seed)
         dgl.seed(args.seed)
         args.trainer.deterministic = True
 
     # We instantiate the model.
+    # TODO: delete later
+    # `data_dir` contains datasets generated from different seeds
+    data_dir = Path(args.model.init_args.data_dir).expanduser().resolve()
+    parent_dir, patten = data_dir.parent, data_dir.name
+    args.model.init_args.data_dir = np.random.choice(
+        list(parent_dir.glob(patten))
+    )
+
     model = import_object(args.model.class_path)(
         optim_args=args.optim, **args.model.init_args
     )
@@ -224,16 +277,36 @@ def train(args: Namespace) -> Dict[str, Union[int, float]]:
     return metrics[0]
 
 
-def main(args: Namespace):
-    initialize_logging(args.pop("verbose"))
+def train(args: Namespace):
     num_runs = args.pop("num_runs")
-    if num_runs > 1:
-        args.seed = None
     metrics_per_run = []
     for _ in range(num_runs):
-        metrics_per_run.append(train(copy.deepcopy(args)))
+        metrics_per_run.append(_run_train(copy.deepcopy(args)))
+    outputs = {"num_runs": num_runs, "metrics": {}}
     metrics = metrics_per_run[0]
-    print(f"Summary of {len(metrics_per_run)} runs:")
     for k in metrics:
         values = np.asarray([m[k] for m in metrics_per_run])
-        print(f"{k}_avg = {np.mean(values)}, {k}_std = {np.std(values)}")
+        outputs["metrics"][f"{k}_avg"] = np.mean(values)
+        outputs["metrics"][f"{k}_std"] = np.std(values)
+    return outputs
+
+
+def main(args: Namespace):
+    initialize_logging(args.pop("verbose"))
+    optuna_config = args.pop("optuna_config")
+    if optuna_config is not None:
+        # optimizes hyperparameters with Optuna
+        with open(optuna_config, "r", encoding="utf-8") as f:
+            optuna_config = dict_to_namespace(yaml.safe_load(f))
+        study = optuna.create_study(
+            direction=optuna_config.direction, sampler=TPESampler()
+        )
+        study.optimize(
+            Objective(optuna_config.metric, optuna_config.sampler, args),
+            n_trials=optuna_config.num_trials,
+        )
+        print(study.best_trials)
+        print(get_param_importances(study))
+    else:
+        # reports average performance of multiple runs
+        print(train(args))

@@ -29,20 +29,22 @@ class BaseModel(pl.LightningModule):
         return True
 
     def _get_param_groups(self) -> List[Dict[str, Any]]:
-        weight_decay = getattr(
-            self._optim_args.optimizer.init_args, "weight_decay", None
-        )
-        if weight_decay is None:
-            return [{"params": self.parameters()}]
+        weight_decay = getattr(self._optim_args, "weight_decay", 0.0)
         enable_decay = []
         disable_decay = []
-        for name, param in self.named_parameters():
-            if not param.requires_grad:
-                continue
-            if self._should_decay(name):
-                enable_decay.append(param)
-            else:
-                disable_decay.append(param)
+        memory = set()
+        modules = self.modules()
+        for m in modules:
+            for name, param in m._parameters.items():
+                if param is None or param in memory:
+                    continue
+                memory.add(param)
+                if not param.requires_grad:
+                    continue
+                if self._should_decay(name):
+                    enable_decay.append(param)
+                else:
+                    disable_decay.append(param)
         return [
             {"params": enable_decay, "weight_decay": weight_decay},
             {"params": disable_decay, "weight_decay": 0.0},

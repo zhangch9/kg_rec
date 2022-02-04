@@ -1,0 +1,38 @@
+metric: auc_test_avg
+direction: maximize
+num_trials: 30
+sampler:
+  model:
+    init_args:
+      dropout:
+        suggest_categorical:
+          name: dropout
+          choices: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]
+      dropout_attn:
+        suggest_categorical:
+          name: dropout_attn
+          choices: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]
+  optim:
+    optimizer:
+      init_args:
+        lr:
+          suggest_categorical:
+            name: lr
+            choices: [0.001, 0.003, 0.01, 0.03, 0.1]
+    weight_decay:
+      suggest_categorical:
+        name: weight_decay
+        choices:
+          [
+            0.000001,
+            0.000003,
+            0.00001,
+            0.00003,
+            0.0001,
+            0.0003,
+            0.001,
+            0.003,
+            0.01,
+            0.03,
+            0.1,
+          ]

@@ -8,4 +8,5 @@ dgl-cuda11.1=0.7.2=py39_0
 docstring_parser=0.13=pyhd8ed1ab_0
 jsonargparse=4.1.0=pyhd8ed1ab_0
 mlflow=1.2.0=py_1
+optuna=2.10.0=pyhd8ed1ab_0
 scikit-learn=1.0.2=py39h4dfa638_0

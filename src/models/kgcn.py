@@ -24,7 +24,6 @@ from ..data import CTRPredictionDataset, create_dataloader
 from ..data.utils import adj_list_from_triplets, read_data_lastfm
 from .base import BaseModel
 from .layers import KGCLayer
-from .utils import get_activation
 
 
 class KGCN(BaseModel):
@@ -249,13 +248,9 @@ class KGCN(BaseModel):
             pin_memory=self._pin_memory,
         )
 
-    def _get_embeddings(
-        self, uids: torch.Tensor, iids: torch.Tensor
-    ) -> Tuple[
-        torch.Tensor, torch.Tensor, List[torch.Tensor], List[torch.Tensor]
-    ]:
-        embeddings_user = self.embeddings_user[uids]
-
+    def _get_neighbors(
+        self, iids: torch.Tensor
+    ) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
         batch_size = iids.size(0)
         # The shape of `eids_per_hop[i]` is `[batch_size, num_neighbors ** i]`.
         # The shape of `rid_per_hop[i]` is
@@ -274,6 +269,16 @@ class KGCN(BaseModel):
             )
             eids_per_hop.append(eids)
             rids_per_hop.append(rids)
+        return eids_per_hop, rids_per_hop
+
+    def _get_embeddings(
+        self,
+        uids: torch.Tensor,
+        eids_per_hop: Sequence[torch.Tensor],
+        rids_per_hop: Sequence[torch.Tensor],
+    ) -> Tuple[torch.Tensor, List[torch.Tensor], List[torch.Tensor]]:
+        embeddings_user = self.embeddings_user[uids]
+
         embeddings_entity_per_hop = [
             self.embeddings_entity[eids] for eids in eids_per_hop
         ]
@@ -281,7 +286,6 @@ class KGCN(BaseModel):
             self.embeddings_relation[rids] for rids in rids_per_hop
         ]
         return (
-            eids_per_hop,
             embeddings_user,
             embeddings_entity_per_hop,
             embeddings_relation_per_hop,
@@ -396,13 +400,14 @@ class KGCN(BaseModel):
 
     def training_step(
         self, batch: Dict[str, torch.Tensor], batch_idx: int
-    ) -> Dict[str, Union[torch.Tensor, int]]:
+    ) -> Dict[str, Union[torch.Tensor, float]]:
+        uids, iids = batch["uids"], batch["iids"]
+        eids_per_hop, rids_per_hop = self._get_neighbors(iids)
         (
-            eids_per_hop,
             embeddings_user,
             embeddings_entity_per_hop,
             embeddings_relation_per_hop,
-        ) = self._get_embeddings(batch["uids"], batch["iids"])
+        ) = self._get_embeddings(uids, eids_per_hop, rids_per_hop)
         logits = self.forward(
             embeddings_user,
             embeddings_entity_per_hop,
@@ -411,8 +416,8 @@ class KGCN(BaseModel):
         loss_cls = F.binary_cross_entropy_with_logits(
             logits, target=batch["labels"].float()
         )
-        wt_cls = logits.numel()
-        loss = loss_cls
+        wt_cls = float(logits.numel())
+        loss = 0 + loss_cls
         outputs = {
             "loss_cls": loss_cls.detach(),
             "wt_cls": wt_cls,
@@ -420,7 +425,6 @@ class KGCN(BaseModel):
         if self._weight_ls > 0.0:
             loss_ls = 0.0
             wt_ls = 0
-            uids = batch["uids"]
             batch_size = uids.size(0)
             uids = uids.view(batch_size, 1).contiguous()
 
@@ -430,7 +434,7 @@ class KGCN(BaseModel):
             for eids in eids_per_hop:
                 indices = uids * self._num_entities + eids
                 if indices_holdout is None:
-                    indices_holdout = indices
+                    indices_holdout = indices.view(batch_size, 1).contiguous()
 
                 # get labels of `eids` that are not heldout
                 has_label = torch.logical_and(
@@ -452,47 +456,51 @@ class KGCN(BaseModel):
                 embeddings_relation_per_hop,
             )
             logits = logits.squeeze(1).contiguous()
-            loss_ls = F.binary_cross_entropy_with_logits(
+
+            loss_ls = F.binary_cross_entropy(
                 logits, target=batch["labels"].float()
             )
-            wt_ls = logits.numel()
+            wt_ls = float(logits.numel())
             loss += self._weight_ls * loss_ls
             outputs["loss_ls"] = loss_ls.detach()
             outputs["wt_ls"] = wt_ls
         outputs["loss"] = loss
         return outputs
 
-    def training_epoch_end(self, outputs: Sequence[torch.Tensor]):
+    def training_epoch_end(
+        self, outputs: Sequence[Dict[str, Union[torch.Tensor, float]]]
+    ):
         loss = 0.0
         loss_cls = 0.0
-        wt_cls = 0.0
+        wt_cls_cum = 0.0
         loss_ls = 0.0
-        wt_ls = 0.0
+        wt_ls_cum = 0.0
         for out in outputs:
-            loss += out["loss"].item() * out["wt_cls"]
-            loss_cls += out["loss_cls"].item() * out["wt_cls"]
-            wt_cls += out["wt_cls"]
+            wt_cls = out["wt_cls"]
+            loss += out["loss"].item() * wt_cls
+            loss_cls += out["loss_cls"].item() * wt_cls
+            wt_cls_cum += wt_cls
             if self._weight_ls > 0.0:
-                loss_ls += out["loss_ls"].item() * out["wt_ls"]
-                wt_ls += out["wt_ls"]
-        wt_cls = float(wt_cls)
-        wt_ls = float(wt_ls)
-        self.log("loss", loss / wt_cls)
-        self.log("loss_cls", loss_cls / wt_cls)
-        self.log("wt_cls", wt_cls)
+                wt_ls = out["wt_ls"]
+                loss_ls += out["loss_ls"].item() * wt_ls
+                wt_ls_cum += wt_ls
+        self.log("loss", loss / wt_cls_cum)
+        self.log("loss_cls", loss_cls / wt_cls_cum)
+        self.log("wt_cls", wt_cls_cum)
         if self._weight_ls > 0.0:
-            self.log("loss_kg", loss_ls / wt_ls)
-            self.log("wt_kg", wt_ls)
+            self.log("loss_ls", loss_ls / wt_ls_cum)
+            self.log("wt_ls", wt_ls_cum)
 
     def validation_step(
         self, batch: Dict[str, torch.Tensor], batch_idx: int
     ) -> Dict[str, torch.Tensor]:
+        uids, iids = batch["uids"], batch["iids"]
+        eids_per_hop, rids_per_hop = self._get_neighbors(iids)
         (
-            _,
             embeddings_user,
             embeddings_entity_per_hop,
             embeddings_relation_per_hop,
-        ) = self._get_embeddings(batch["uids"], batch["iids"])
+        ) = self._get_embeddings(uids, eids_per_hop, rids_per_hop)
         logits = self.forward(
             embeddings_user,
             embeddings_entity_per_hop,

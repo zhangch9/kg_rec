@@ -9,11 +9,14 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from .utils import get_activation
+# isort: off
+# import after torch
+import dgl
+from dgl import function as dgl_fn
+from dgl.nn.pytorch import edge_softmax
 
-import dgl  # isort: skip
-from dgl import function as dgl_fn  # isort: skip
-from dgl.nn.pytorch import edge_softmax  # isort: skip
+# isort: on
+from .utils import calculate_gain, get_activation
 
 
 class KGCLayer(nn.Module):
@@ -45,6 +48,9 @@ class KGCLayer(nn.Module):
         self.reset_parameter()
 
     def reset_parameter(self):
+        nn.init.xavier_uniform_(
+            self.fc.weight, gain=calculate_gain(self.activation)
+        )
         if self.fc.bias is not None:
             nn.init.zeros_(self.fc.bias)
 
@@ -126,6 +132,7 @@ class SimpleHGAT(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.dropout_attn = nn.Dropout(dropout_attn)
 
+        self.residual = None
         if residual:
             if input_dim_node == output_dim_node_t:
                 self.residual = nn.Identity()
@@ -134,11 +141,19 @@ class SimpleHGAT(nn.Module):
         self.reset_parameter()
 
     def reset_parameter(self):
-        nn.init.kaiming_uniform_(self.attn_query, a=math.sqrt(5))
-        nn.init.kaiming_uniform_(self.attn_key, a=math.sqrt(5))
-        nn.init.kaiming_uniform_(self.attn_edge, a=math.sqrt(5))
+        nn.init.xavier_uniform_(self.fc_node.weight, gain=1.0)
+        nn.init.xavier_uniform_(self.fc_edge.weight, gain=1.0)
+
+        nn.init.xavier_uniform_(self.attn_query, gain=1.0)
+        nn.init.xavier_uniform_(self.attn_key, gain=1.0)
+        nn.init.xavier_uniform_(self.attn_edge, gain=1.0)
         if self.bias is not None:
             nn.init.zeros_(self.bias)
+
+        if isinstance(self.residual, nn.Linear):
+            nn.init.xavier_uniform_(self.residual.weight, gain=1.0)
+            if self.residual.bias is not None:
+                nn.init.zeros_(self.residual.bias)
 
     def forward(
         self,
@@ -185,6 +200,6 @@ class SimpleHGAT(nn.Module):
         if self.bias is not None:
             outputs += self.bias
         outputs = self.activation(outputs)
-        if hasattr(self, "residual"):
+        if self.residual is not None:
             outputs += self.residual(inputs_node)
         return outputs

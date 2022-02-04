@@ -19,7 +19,7 @@ from torch import nn
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
 
-from ..data import RippleDataset, create_dataloader
+from ..data import CTRPredictionDataset, create_dataloader
 from ..data.utils import adj_list_from_triplets, read_data_lastfm
 from .base import BaseModel
 
@@ -87,6 +87,7 @@ class RippleNet(BaseModel):
         self._dataset_train = None
         self._dataset_val = None
         self._dataset_test = None
+        self.register_buffer("ripple_sets", None)
         self._build_dataset(
             dataset, data_dir, max_hop, num_neighbors, val_ratio, test_ratio
         )
@@ -140,7 +141,7 @@ class RippleNet(BaseModel):
         adj_list_kg = adj_list_from_triplets(triplets_kg, reverse_triplet=True)
         logger.info("===== Building ripple sets ... ======")
         start = time.perf_counter()
-        ripple_sets = torch.empty(
+        self.ripple_sets = torch.empty(
             self._num_users, max_hop, 3, num_neighbors, dtype=torch.long
         )
 
@@ -167,7 +168,9 @@ class RippleNet(BaseModel):
         for _ in range(len(uids_valid)):
             uid, ripple_set = queue_res.get()
             queue_res.task_done()
-            ripple_sets[uid] = torch.as_tensor(ripple_set, dtype=torch.long)
+            self.ripple_sets[uid] = torch.as_tensor(
+                ripple_set, dtype=torch.long
+            )
         queue_res.join()
         for worker in workers:
             worker.join()
@@ -177,26 +180,23 @@ class RippleNet(BaseModel):
             f"({time.perf_counter() - start:.3f}s) ======"
         )
 
-        self._dataset_train = RippleDataset(
+        self._dataset_train = CTRPredictionDataset(
             torch.as_tensor(
                 ratings_train[np.isin(ratings_train[:, 0], uids_valid)],
                 dtype=torch.long,
-            ),
-            ripple_sets,
+            )
         )
-        self._dataset_val = RippleDataset(
+        self._dataset_val = CTRPredictionDataset(
             torch.as_tensor(
                 ratings_val[np.isin(ratings_val[:, 0], uids_valid)],
                 dtype=torch.long,
-            ),
-            ripple_sets,
+            )
         )
-        self._dataset_test = RippleDataset(
+        self._dataset_test = CTRPredictionDataset(
             torch.as_tensor(
                 ratings_test[np.isin(ratings_test[:, 0], uids_valid)],
                 dtype=torch.long,
-            ),
-            ripple_sets,
+            )
         )
 
     def reset_parameters(self):
@@ -205,6 +205,8 @@ class RippleNet(BaseModel):
 
         a = math.sqrt(3 / self.embeddings_relation.size(1))
         nn.init.uniform_(self.embeddings_relation, -a, a)
+
+        nn.init.xavier_uniform_(self.transform.weight, gain=1.0)
 
     def train_dataloader(self) -> DataLoader:
         return create_dataloader(
@@ -295,9 +297,9 @@ class RippleNet(BaseModel):
 
     def training_step(
         self, batch: Dict[str, torch.Tensor], batch_idx: int
-    ) -> Dict[str, Union[torch.Tensor, int]]:
+    ) -> Dict[str, Union[torch.Tensor, float]]:
         embs_head, embs_relation, embs_tail = self._split_ripple_sets(
-            batch["ripple_sets"]
+            self.ripple_sets[batch["uids"]]
         )
         logits = self.forward(
             self.embeddings_entity[batch["iids"]],
@@ -308,15 +310,15 @@ class RippleNet(BaseModel):
         loss_cls = F.binary_cross_entropy_with_logits(
             logits, target=batch["labels"].float()
         )
-        wt_cls = logits.numel()
-        loss = loss_cls
+        wt_cls = float(logits.numel())
+        loss = 0 + loss_cls
         outputs = {
             "loss_cls": loss_cls.detach(),
             "wt_cls": wt_cls,
         }
         if self._weight_kg > 0:
-            loss_kg = 0.0
-            wt_kg = 0
+            loss_kg = torch.zeros_like(loss)
+            wt_kg = 0.0
             num_hops = len(embs_head)
             for hop in range(num_hops):
                 r_t = (
@@ -329,7 +331,7 @@ class RippleNet(BaseModel):
                 )
                 logits = torch.sum(embs_head[hop] * r_t, dim=2)
                 loss_kg += torch.sigmoid(logits).sum()
-                wt_kg += logits.numel()
+                wt_kg += float(logits.numel())
             loss_kg = -loss_kg / float(wt_kg)
             loss += self._weight_kg * loss_kg
             outputs["loss_kg"] = loss_kg.detach()
@@ -338,34 +340,34 @@ class RippleNet(BaseModel):
         return outputs
 
     def training_epoch_end(
-        self, outputs: Sequence[Dict[str, Union[torch.Tensor, int]]]
+        self, outputs: Sequence[Dict[str, Union[torch.Tensor, float]]]
     ):
         loss = 0.0
         loss_cls = 0.0
-        wt_cls = 0.0
+        wt_cls_cum = 0.0
         loss_kg = 0.0
-        wt_kg = 0.0
+        wt_kg_cum = 0.0
         for out in outputs:
-            loss += out["loss"].item() * out["wt_cls"]
-            loss_cls += out["loss_cls"].item() * out["wt_cls"]
-            wt_cls += out["wt_cls"]
+            wt_cls = out["wt_cls"]
+            loss += out["loss"].item() * wt_cls
+            loss_cls += out["loss_cls"].item() * wt_cls
+            wt_cls_cum += wt_cls
             if self._weight_kg > 0.0:
-                loss_kg += out["loss_kg"].item() * out["wt_kg"]
-                wt_kg += out.get("wt_kg", 0)
-        wt_cls = float(wt_cls)
-        wt_kg = float(wt_kg)
-        self.log("loss", loss / wt_cls)
-        self.log("loss_cls", loss_cls / wt_cls)
-        self.log("wt_cls", wt_cls)
+                wt_kg = out["wt_kg"]
+                loss_kg += out["loss_kg"].item() * wt_kg
+                wt_kg_cum += wt_kg
+        self.log("loss", loss / wt_cls_cum)
+        self.log("loss_cls", loss_cls / wt_cls_cum)
+        self.log("wt_cls", wt_cls_cum)
         if self._weight_kg > 0.0:
-            self.log("loss_kg", loss_kg / wt_kg)
-            self.log("wt_kg", wt_kg)
+            self.log("loss_kg", loss_kg / wt_kg_cum)
+            self.log("wt_kg", wt_kg_cum)
 
     def validation_step(
         self, batch: Dict[str, torch.Tensor], batch_idx: int
     ) -> Dict[str, torch.Tensor]:
         embs_head, embs_relation, embs_tail = self._split_ripple_sets(
-            batch["ripple_sets"]
+            self.ripple_sets[batch["uids"]]
         )
         logits = self.forward(
             self.embeddings_entity[batch["iids"]],

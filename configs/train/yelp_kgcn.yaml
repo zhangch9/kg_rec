@@ -2,13 +2,12 @@ model:
   class_path: src.models.KGCN
   init_args:
     dataset: lastfm
-    data_dir: data/processed/lastfm/seed_*
-    num_neighbors: 8
-    embed_dim: 16
-    num_layers: 1
+    data_dir: data/processed/yelp/core_10_seed_*
+    num_neighbors: 16
+    embed_dim: 32
+    num_layers: 2
     aggregation: cat
     weight_ls: 0.0
-    bias: true
     dropout: 0.0
     dropout_attn: 0.0
     batch_size_train: 4096
@@ -17,13 +16,13 @@ optim:
   optimizer:
     class_path: torch.optim.AdamW
     init_args:
-      lr: 0.01
+      lr: 0.003
   weight_decay: 0.0
 trainer:
   logger:
     class_path: pytorch_lightning.loggers.MLFlowLogger
     init_args:
-      experiment_name: lastfm_kgcn
+      experiment_name: yelp_kgcn
       tracking_uri: file:mlruns
   gpus:
     - 0
